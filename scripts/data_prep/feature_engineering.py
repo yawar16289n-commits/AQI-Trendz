@@ -24,13 +24,14 @@ def perform_feature_engineering():
     df['day_of_week'] = df['time'].dt.dayofweek
     df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
 
-    # ── ADVANCED FEATURE 1: LAG FEATURES ───────────────────────────────────────
-    # PM2.5 from 1 hour ago and 24 hours ago (strongest predictors of current PM2.5)
-    print("Adding lag features (pm2_5 1h & 24h)...")
-    df['pm2_5_lag_1h'] = df['pm2_5'].shift(1)
-    df['pm2_5_lag_24h'] = df['pm2_5'].shift(24)
-    df['pm10_lag_1h'] = df['pm10'].shift(1)
-    df['pm10_lag_24h'] = df['pm10'].shift(24)
+    # ── ADVANCED FEATURE 1: LAG FEATURES (Multi-Pollutant) ─────────────────────
+    print("Adding 1h and 24h lag features for all 5 target pollutants...")
+    
+    pollutants = ['pm2_5', 'pm10', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide']
+    
+    for pol in pollutants:
+        df[f'{pol}_lag_1h'] = df[pol].shift(1)
+        df[f'{pol}_lag_24h'] = df[pol].shift(24)
 
     # ── Drop NaN rows introduced by the 24h lag ───────────────────────────────
     before = len(df)

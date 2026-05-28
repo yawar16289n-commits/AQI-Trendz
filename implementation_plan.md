@@ -56,11 +56,30 @@ To make our AQI predictions operational and self-updating, we will set up automa
 
 *(Note: When we return to Chunk 3e to enhance the model, we will integrate residual analysis, feature interactions, and rolling averages as requested.)*
 
-### Chunk 3: Model Training Pipeline
-- **Mini-chunk 3a**: Create the `training_pipeline.py` script to fetch historical features and targets from Hopsworks.
-- **Mini-chunk 3b**: Train the selected models (Random Forest, XGBoost/Ridge, TensorFlow/PyTorch LSTM).
-- **Mini-chunk 3c**: Evaluate performance using RMSE, MAE, and R² metrics.
-- **Mini-chunk 3d**: Automatically store the best trained model in the Hopsworks Model Registry for that specific run.
+## Phase 3: Multi-Pollutant Model Training
+
+To calculate the true US EPA AQI, we need to predict the concentrations of all critical pollutants, not just PM2.5. We will upgrade our architecture to a **Multi-Output Forecasting** model.
+
+### Proposed Architecture for Multi-Pollutant Forecasting
+
+1. **Feature Engineering Upgrade**: 
+   - We will generate 1-hour and 24-hour lag features for *all 5* target pollutants: `pm2_5`, `pm10`, `nitrogen_dioxide`, `sulphur_dioxide`, and `carbon_monoxide`.
+   - This expands our feature set to capture the autoregressive nature of every single gas.
+
+2. **Multi-Output Model Training (`training_pipeline.py`)**: 
+   - Instead of predicting a single target, our models will output a 5-dimensional vector.
+   - We will wrap our winning XGBoost model (and the baselines) inside scikit-learn's `MultiOutputRegressor`. This effectively trains a dedicated, optimized XGBoost model for each of the 5 pollutants simultaneously.
+   - We will evaluate the MAE and R² for each pollutant individually to ensure high accuracy across the board.
+
+3. **Simultaneous Autoregressive Forecasting (`predict_pipeline.py`)**:
+   - The 3-day forecast script will be upgraded to predict all 5 pollutants for *Hour 1*.
+   - It will take those 5 predictions and feed them back into the feature vector as the `lag_1h` features for *Hour 2*.
+   - This chain reaction will perfectly simulate the future state of all 5 AQI components for the next 72 hours.
+
+> [!IMPORTANT]
+> **User Review Required**:
+> - Does wrapping XGBoost in a `MultiOutputRegressor` to simultaneously forecast all 5 pollutants sound like the right approach to you?
+> - Once we predict all 5 raw concentrations, we will need to run them through the standard piecewise AQI formula to get the final AQI score (0-500 scale). We can implement this formula directly in the `predict_pipeline.py` script so the final CSV has the true AQI. Should I add the AQI calculation step to this chunk?
 
 ### Chunk 4: Automated CI/CD Pipeline (GitHub Actions)
 - **Mini-chunk 4a**: Set up GitHub repository and store Hopsworks API keys as Secrets.
