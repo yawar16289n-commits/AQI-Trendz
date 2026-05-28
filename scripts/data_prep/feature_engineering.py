@@ -25,15 +25,25 @@ def perform_feature_engineering():
     df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
 
     # ── ADVANCED FEATURE 1: LAG FEATURES (Multi-Pollutant) ─────────────────────
-    print("Adding 1h and 24h lag features for all 5 target pollutants...")
+    print("Adding 1h, 2h, 6h, and 24h lag features for all 5 target pollutants...")
     
     pollutants = ['pm2_5', 'pm10', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide']
     
     for pol in pollutants:
         df[f'{pol}_lag_1h'] = df[pol].shift(1)
+        df[f'{pol}_lag_2h'] = df[pol].shift(2)
+        df[f'{pol}_lag_6h'] = df[pol].shift(6)
         df[f'{pol}_lag_24h'] = df[pol].shift(24)
 
-    # ── Drop NaN rows introduced by the 24h lag ───────────────────────────────
+    # ── ADVANCED FEATURE 2: ROLLING FEATURES (6h & 24h Trends - Run B) ─────────
+    print("Adding 6h AND 24h rolling mean+std for all 5 pollutants (Run B)...")
+    for pol in pollutants:
+        df[f'{pol}_roll_mean_6h']  = df[pol].shift(1).rolling(window=6,  min_periods=1).mean()
+        df[f'{pol}_roll_std_6h']   = df[pol].shift(1).rolling(window=6,  min_periods=1).std().fillna(0)
+        df[f'{pol}_roll_mean_24h'] = df[pol].shift(1).rolling(window=24, min_periods=1).mean()
+        df[f'{pol}_roll_std_24h']  = df[pol].shift(1).rolling(window=24, min_periods=1).std().fillna(0)
+
+    # ── Drop NaN rows introduced by lags ──────────────────────────────────────
     before = len(df)
     df.dropna(inplace=True)
     after = len(df)

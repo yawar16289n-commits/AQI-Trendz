@@ -79,7 +79,35 @@ To calculate the true US EPA AQI, we need to predict the concentrations of all c
 > [!IMPORTANT]
 > **User Review Required**:
 > - Does wrapping XGBoost in a `MultiOutputRegressor` to simultaneously forecast all 5 pollutants sound like the right approach to you?
-> - Once we predict all 5 raw concentrations, we will need to run them through the standard piecewise AQI formula to get the final AQI score (0-500 scale). We can implement this formula directly in the `predict_pipeline.py` script so the final CSV has the true AQI. Should I add the AQI calculation step to this chunk?
+## Phase 5: Advanced Model Enhancement (Chunk 3e Expansion)
+
+We have established a strong baseline with 1h and 24h lags, but we can squeeze out more performance. We will implement these enhancements sequentially, logging the performance at each step to our `model_history.csv` to scientifically track what works best.
+
+### Step 0: Codebase Refactoring (In Progress)
+Before adding more features, we will divide our large pipeline scripts into smaller, modular files. We will create a `scripts/utils/` directory to house shared logic like the AQI calculation formulas and evaluation metrics. This keeps the main pipelines clean and maintainable.
+
+### Step 1: AQI Error Tracking
+We will modify `training_pipeline.py` (using our new utils) to calculate the **True AQI MAE**. Instead of just tracking the error of raw pollutant concentrations, we will convert both the true test data and the model's predictions into the official 0-500 US EPA AQI scale, and measure the Mean Absolute Error of the final AQI. This will be added to `model_history.csv`.
+
+### Step 2: Intermediate Lags (2h & 6h)
+We will add `lag_2h` and `lag_6h` for all 5 pollutants. The 1h lag is powerful, but 2h and 6h give the model a sense of the *momentum* or slope of the pollution curve (is it rising rapidly or falling?). We will train and log the results.
+
+### Step 3: Rolling Features (6h & 24h Trends)
+Point-in-time lags are noisy. We will add **6-hour AND 24-hour rolling averages**, plus rolling standard deviations (volatility) for the pollutants. 
+- *Why 24h?* Air pollution is heavily driven by the diurnal cycle (day vs night temperature inversions). 24h rolling captures the baseline pollution level for the whole day.
+- *Why 6h?* This captures intra-day shifts like morning and evening rush hour traffic spikes.
+We will train and log the results.
+
+### Step 4: Residual Analysis
+We will write a dedicated script to analyze the XGBoost model's residuals (the difference between the true AQI and predicted AQI). We will plot these errors over time and against temperature/humidity to see *where* the model fails (e.g., does it always under-predict during high humidity or winter?).
+
+### Step 5: Feature Interactions
+Based on the residual analysis, we will explicitly multiply features together (e.g., `wind_speed * pm2_5_lag_1h` or `temperature * relative_humidity`) to help the model learn complex meteorological traps (like temperature inversions). We will train and log the final results.
+
+> [!IMPORTANT]
+> **User Review Required**:
+> - This sequential, scientific approach allows us to measure the exact impact of each feature group on the final AQI error. Does this 5-step plan perfectly match how you want to proceed?
+> - Once approved, I will immediately execute Step 0 (AQI Metric) and Step 1 (2h/6h Lags) and show you the results!
 
 ### Chunk 4: Automated CI/CD Pipeline (GitHub Actions)
 - **Mini-chunk 4a**: Set up GitHub repository and store Hopsworks API keys as Secrets.
