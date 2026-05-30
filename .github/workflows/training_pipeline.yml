@@ -1,0 +1,31 @@
+name: "Daily: Retrain Model"
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # Every day at midnight UTC
+  workflow_dispatch:       # Manual trigger from GitHub UI
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      # Pulls all data from Hopsworks Feature Store, trains XGBoost,
+      # evaluates it, and pushes the new model to Hopsworks Model Registry.
+      # No files are committed back to git — Hopsworks handles storage.
+      - name: Train and Register Model
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python scripts/pipelines/hopsworks_training.py

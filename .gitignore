@@ -8,3 +8,4 @@ models/
 eda_plots/
 *.log
 .vscode/
+.cache.sqlite  

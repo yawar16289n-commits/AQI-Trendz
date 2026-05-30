@@ -1,0 +1,43 @@
+name: "Hourly: Fetch Data + Predict"
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # Every hour at minute 0
+  workflow_dispatch:       # Manual trigger from GitHub UI
+
+jobs:
+  data-and-predict:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      # Step 1: Fetch latest 7 days AQI + weather from Open-Meteo
+      - name: Fetch Latest Raw Data
+        run: python scripts/data_prep/fetch_latest.py
+
+      # Step 2: Feature engineer the new raw data (lags, rolling stats)
+      - name: Feature Engineering
+        run: python scripts/data_prep/feature_engineering_latest.py
+
+      # Step 3: Push only new rows to Hopsworks Feature Store
+      - name: Push Features to Hopsworks
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python scripts/pipelines/hopsworks_feature_upload.py
+
+      # Step 4: Download model from Hopsworks, predict 72h, push predictions
+      - name: Run Prediction Pipeline
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: python scripts/pipelines/predict_pipeline.py
