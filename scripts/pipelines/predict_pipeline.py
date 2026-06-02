@@ -64,25 +64,39 @@ def run():
     fs  = project.get_feature_store()
     mr  = project.get_model_registry()
 
-    # ── 2. Load model from Hopsworks Model Registry ───────────────────────────
-    print("Downloading model from Hopsworks Model Registry...")
-    try:
-        hw_model = mr.get_best_model(
-            name="xgboost_multi_aqi",
-            metric="r2",
-            direction="max"
-        )
-        model_dir  = hw_model.download()
-        model_path = os.path.join(model_dir, "xgboost_multi_aqi.pkl")
-        model      = joblib.load(model_path)
-        print(f"  Model loaded from Registry (r2={hw_model.training_metrics.get('r2', 'N/A')})")
-    except Exception as e:
-        print(f"  WARNING: Could not load model from Registry ({e}). Falling back to local model.")
+    # ── 2. Load best model from Hopsworks Model Registry ──────────────────────
+    print("Evaluating models from Hopsworks Model Registry...")
+    model_names = ["xgboost_multi_aqi", "rf_multi_aqi", "lr_multi_aqi"]
+    best_model_name = None
+    best_r2 = -float('inf')
+    best_hw_model = None
+
+    for name in model_names:
+        try:
+            hw_model = mr.get_best_model(name=name, metric="r2", direction="max")
+            r2 = hw_model.training_metrics.get('r2', -float('inf'))
+            print(f"  {name}: r2={r2:.4f}")
+            if r2 > best_r2:
+                best_r2 = r2
+                best_hw_model = hw_model
+                best_model_name = name
+        except Exception as e:
+            print(f"  WARNING: Could not fetch {name}: {e}")
+
+    if not best_hw_model:
+        print("  WARNING: Could not load any model from Registry. Falling back to local model.")
         if not os.path.exists(LOCAL_MODEL_PATH):
             print("ERROR: No local model found either. Please run hopsworks_training.py first.")
             sys.exit(1)
         model = joblib.load(LOCAL_MODEL_PATH)
         print(f"  Local model loaded from {LOCAL_MODEL_PATH}")
+    else:
+        print(f"\nWinning Model: {best_model_name} (r2={best_r2:.4f})")
+        print("Downloading best model...")
+        model_dir  = best_hw_model.download()
+        model_path = os.path.join(model_dir, f"{best_model_name}.pkl")
+        model      = joblib.load(model_path)
+        print(f"  Best model loaded successfully!")
 
     # ── 3. Fetch last 24h of lag data from Hopsworks Feature Store ────────────
     print("Fetching last 24 hours of data from Feature Store for lag context...")

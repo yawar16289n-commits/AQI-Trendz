@@ -3,6 +3,8 @@ import sys
 import pandas as pd
 import hopsworks
 import joblib
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
 from xgboost import XGBRegressor
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
@@ -50,45 +52,47 @@ def train_and_upload_model():
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
-    # 3. Train Model
-    print("Training Multi-Output XGBoost model...")
-    base_xgb = XGBRegressor(
-        n_estimators=100, 
-        learning_rate=0.1, 
-        max_depth=6, 
-        random_state=42, 
-        n_jobs=-1
-    )
-    model = MultiOutputRegressor(base_xgb)
-    model.fit(X_train, y_train)
+    # 3. Train Models
+    models_to_train = {
+        "xgboost_multi_aqi": MultiOutputRegressor(XGBRegressor(
+            n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42, n_jobs=-1
+        )),
+        "rf_multi_aqi": MultiOutputRegressor(RandomForestRegressor(
+            n_estimators=100, random_state=42, n_jobs=-1
+        )),
+        "lr_multi_aqi": MultiOutputRegressor(LinearRegression(n_jobs=-1))
+    }
     
-    # 4. Evaluate
-    print("Evaluating Model...")
-    y_pred = model.predict(X_test)
-    mae = mean_absolute_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
-    print(f"Model Performance: MAE = {mae:.4f}, R2 = {r2:.4f}")
-    
-    # 5. Save and Upload to Model Registry
-    model_dir = os.path.join(PROJECT_ROOT, 'models', 'hopsworks')
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, 'xgboost_multi_aqi.pkl')
-    
-    print("Saving model locally...")
-    joblib.dump(model, model_path)
-    
-    print("Uploading to Hopsworks Model Registry...")
     mr = project.get_model_registry()
     
-    hw_model = mr.python.create_model(
-        name="xgboost_multi_aqi",
-        metrics={"mae": mae, "r2": r2},
-        description="XGBoost MultiOutputRegressor for 5 AQI Pollutants",
-        input_example=X_train.sample(1)
-    )
-    
-    hw_model.save(model_dir)
-    print("[SUCCESS] Model successfully trained and registered in Hopsworks!")
+    for model_name, model in models_to_train.items():
+        print(f"\n--- Training {model_name} ---")
+        model.fit(X_train, y_train)
+        
+        y_pred = model.predict(X_test)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        print(f"{model_name} Performance: MAE = {mae:.4f}, R2 = {r2:.4f}")
+        
+        # Save locally in a specific directory for this model
+        model_dir = os.path.join(PROJECT_ROOT, 'models', 'hopsworks', model_name)
+        os.makedirs(model_dir, exist_ok=True)
+        model_path = os.path.join(model_dir, f'{model_name}.pkl')
+        
+        print(f"Saving {model_name} locally...")
+        joblib.dump(model, model_path)
+        
+        print(f"Uploading {model_name} to Hopsworks Model Registry...")
+        hw_model = mr.python.create_model(
+            name=model_name,
+            metrics={"mae": mae, "r2": r2},
+            description=f"MultiOutputRegressor for 5 AQI Pollutants ({model_name})",
+            input_example=X_train.sample(1)
+        )
+        hw_model.save(model_dir)
+        print(f"[SUCCESS] {model_name} successfully trained and registered!")
+        
+    print("\n[SUCCESS] All models trained and uploaded.")
 
 if __name__ == "__main__":
     train_and_upload_model()
