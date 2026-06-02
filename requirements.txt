@@ -3,6 +3,7 @@ numpy>=1.24.0
 scikit-learn>=1.2.0
 xgboost>=2.0.0
 hopsworks[python]>=3.4.0
+confluent-kafka>=2.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
 openmeteo-requests>=0.2.0
