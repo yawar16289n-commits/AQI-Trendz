@@ -53,12 +53,13 @@ def train_and_upload_model():
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
     # 3. Train Models
+    # NOTE: RF uses fewer, shallower trees to keep model file size manageable for upload (~20MB vs ~1GB)
     models_to_train = {
         "xgboost_multi_aqi": MultiOutputRegressor(XGBRegressor(
             n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42, n_jobs=-1
         )),
         "rf_multi_aqi": MultiOutputRegressor(RandomForestRegressor(
-            n_estimators=100, random_state=42, n_jobs=-1
+            n_estimators=30, max_depth=12, random_state=42, n_jobs=-1
         )),
         "lr_multi_aqi": MultiOutputRegressor(LinearRegression(n_jobs=-1))
     }
@@ -79,8 +80,8 @@ def train_and_upload_model():
         os.makedirs(model_dir, exist_ok=True)
         model_path = os.path.join(model_dir, f'{model_name}.pkl')
         
-        print(f"Saving {model_name} locally...")
-        joblib.dump(model, model_path)
+        print(f"Saving {model_name} locally (compressed)...")
+        joblib.dump(model, model_path, compress=3)  # compress=3 significantly reduces file size
         
         print(f"Uploading {model_name} to Hopsworks Model Registry...")
         hw_model = mr.python.create_model(
