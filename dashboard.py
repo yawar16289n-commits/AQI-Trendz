@@ -234,10 +234,11 @@ def _pm25_to_aqi(pm25):
 @st.cache_data(ttl=3600)
 def generate_live_predictions():
     """Generate 72-hour predictions live: fetch future weather + run model.
-    Bypasses the Hopsworks aqi_predictions feature group entirely."""
+    Fast numpy-based implementation — bypasses the Hopsworks aqi_predictions feature group."""
+    import numpy as np
     api_key = os.getenv("HOPSWORKS_API_KEY")
     try:
-        # 1. Fetch 7-day future weather from Open-Meteo
+        # 1. Fetch future weather from Open-Meteo (only 4 days needed)
         cache_s = requests_cache.CachedSession('.cache', expire_after=3600)
         retry_s = retry(cache_s, retries=5, backoff_factor=0.2)
         om = openmeteo_requests.Client(session=retry_s)
@@ -245,7 +246,7 @@ def generate_live_predictions():
             "latitude": 24.933, "longitude": 67.033,
             "hourly": ["temperature_2m", "relative_humidity_2m", "precipitation",
                        "surface_pressure", "wind_speed_10m", "wind_direction_10m", "cloud_cover"],
-            "past_days": 7, "forecast_days": 7,
+            "past_days": 2, "forecast_days": 4,
         })[0].Hourly()
         weather_df = pd.DataFrame({
             "time": pd.date_range(
@@ -261,9 +262,13 @@ def generate_live_predictions():
             "cloud_cover":          resp.Variables(6).ValuesAsNumpy(),
         })
         now_utc = pd.Timestamp.now(tz='UTC')
-        future = weather_df[weather_df["time"] > now_utc].reset_index(drop=True)
+        # Only predict the next 72 hours (3 days)
+        future = weather_df[
+            (weather_df["time"] > now_utc) &
+            (weather_df["time"] <= now_utc + pd.Timedelta(hours=72))
+        ].reset_index(drop=True)
 
-        # 2. Load historical lag context from Hopsworks
+        # 2. Load historical lag context from Hopsworks (48 rows = 2 days)
         historical = None
         if api_key:
             try:
@@ -284,37 +289,63 @@ def generate_live_predictions():
         if model is None:
             return None, "no_model"
 
-        # 4. Run autoregressive predictions hour by hour
+        # 4. Fast numpy-based autoregressive prediction
         POLLUTANTS = ['pm2_5', 'pm10', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide']
         LAG_HOURS  = [1, 2, 6, 24]
         train_features = [c for c in historical.columns if c not in POLLUTANTS and c != 'time']
-        combined = historical[['time'] + POLLUTANTS].copy()
-        preds_list = []
 
-        for _, row in future.iterrows():
-            t = row['time']
+        # Pre-allocate pollutant history as numpy array (historical + future slots)
+        n_hist = len(historical)
+        n_fut  = len(future)
+        n_total = n_hist + n_fut
+        pol_idx = {p: i for i, p in enumerate(POLLUTANTS)}
+        pol_arr = np.zeros((n_total, len(POLLUTANTS)), dtype=np.float32)
+        for i, p in enumerate(POLLUTANTS):
+            pol_arr[:n_hist, i] = historical[p].values
+
+        # All timestamps as numpy int64 (nanoseconds) for fast comparison
+        hist_times = historical['time'].values.astype(np.int64)
+        fut_times  = future['time'].values.astype(np.int64)
+        all_times  = np.concatenate([hist_times, np.zeros(n_fut, dtype=np.int64)])
+
+        preds_list = []
+        for fi in range(n_fut):
+            t_ns = fut_times[fi]
+            all_times[n_hist + fi] = t_ns
+            row = future.iloc[fi]
+            t   = row['time']
+
             feat = {
                 'hour': t.hour, 'day': t.day, 'month': t.month,
                 'day_of_week': t.dayofweek, 'is_weekend': int(t.dayofweek >= 5),
-                'temperature_2m': row.get('temperature_2m', 0),
-                'relative_humidity_2m': row.get('relative_humidity_2m', 0),
-                'precipitation': row.get('precipitation', 0),
-                'surface_pressure': row.get('surface_pressure', 0),
-                'wind_speed_10m': row.get('wind_speed_10m', 0),
-                'wind_direction_10m': row.get('wind_direction_10m', 0),
-                'cloud_cover': row.get('cloud_cover', 0),
+                'temperature_2m':       row['temperature_2m'],
+                'relative_humidity_2m': row['relative_humidity_2m'],
+                'precipitation':        row['precipitation'],
+                'surface_pressure':     row['surface_pressure'],
+                'wind_speed_10m':       row['wind_speed_10m'],
+                'wind_direction_10m':   row['wind_direction_10m'],
+                'cloud_cover':          row['cloud_cover'],
             }
-            import numpy as np
-            for pol in POLLUTANTS:
+
+            cur_idx = n_hist + fi  # index of this timestep in pol_arr
+            for pi, pol in enumerate(POLLUTANTS):
                 for lag in LAG_HOURS:
-                    past = combined[combined['time'] <= t - pd.Timedelta(hours=lag)]
-                    feat[f'{pol}_lag_{lag}h'] = past.iloc[-1][pol] if len(past) > 0 else 0.0
-                p24 = combined[(combined['time'] < t) & (combined['time'] >= t - pd.Timedelta(hours=24))][pol]
-                p6  = combined[(combined['time'] < t) & (combined['time'] >= t - pd.Timedelta(hours=6))][pol]
-                feat[f'{pol}_roll_mean_6h']  = p6.mean()  if len(p6)  > 0 else 0.0
-                feat[f'{pol}_roll_std_6h']   = p6.std()   if len(p6)  > 1 else 0.0
-                feat[f'{pol}_roll_mean_24h'] = p24.mean() if len(p24) > 0 else 0.0
-                feat[f'{pol}_roll_std_24h']  = p24.std()  if len(p24) > 1 else 0.0
+                    lag_ns = lag * 3_600_000_000_000  # hours → nanoseconds
+                    # Find the last row at or before (t - lag)
+                    candidates = np.where(all_times[:cur_idx] <= t_ns - lag_ns)[0]
+                    feat[f'{pol}_lag_{lag}h'] = float(pol_arr[candidates[-1], pi]) if len(candidates) > 0 else 0.0
+
+                # Rolling stats using slice (last 24h and 6h)
+                ns_24 = 24 * 3_600_000_000_000
+                ns_6  =  6 * 3_600_000_000_000
+                mask24 = (all_times[:cur_idx] < t_ns) & (all_times[:cur_idx] >= t_ns - ns_24)
+                mask6  = (all_times[:cur_idx] < t_ns) & (all_times[:cur_idx] >= t_ns - ns_6)
+                vals24 = pol_arr[:cur_idx][mask24, pi]
+                vals6  = pol_arr[:cur_idx][mask6,  pi]
+                feat[f'{pol}_roll_mean_24h'] = float(vals24.mean()) if len(vals24) > 0 else 0.0
+                feat[f'{pol}_roll_std_24h']  = float(vals24.std())  if len(vals24) > 1 else 0.0
+                feat[f'{pol}_roll_mean_6h']  = float(vals6.mean())  if len(vals6)  > 0 else 0.0
+                feat[f'{pol}_roll_std_6h']   = float(vals6.std())   if len(vals6)  > 1 else 0.0
 
             feat_df = pd.DataFrame([feat])
             for c in train_features:
@@ -323,10 +354,7 @@ def generate_live_predictions():
             X = feat_df[train_features].fillna(0)
             pred = model.predict(X)[0]
             preds_list.append(pred)
-            new_row = {'time': t}
-            for j, pol in enumerate(POLLUTANTS):
-                new_row[pol] = pred[j]
-            combined = pd.concat([combined, pd.DataFrame([new_row])], ignore_index=True)
+            pol_arr[n_hist + fi] = pred  # feed back into history
 
         preds_df = pd.DataFrame(preds_list, columns=[f'pred_{p}' for p in POLLUTANTS])
         preds_df['US_EPA_AQI'] = preds_df['pred_pm2_5'].apply(_pm25_to_aqi)
