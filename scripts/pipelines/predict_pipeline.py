@@ -120,6 +120,11 @@ def run():
     # Combine history + future into one frame for rolling lookback
     combined_pollutants = historical[['time'] + POLLUTANTS].copy()
 
+    preds_list = []
+    
+    # Extract the exact feature names and order that the model was trained on
+    train_features = [c for c in historical.columns if c not in POLLUTANTS and c != 'time']
+
     for i, row in future.iterrows():
         t = row['time']
 
@@ -163,31 +168,33 @@ def run():
             feat[f'{pol}_roll_mean_24h'] = past_24.mean() if len(past_24) > 0 else np.nan
             feat[f'{pol}_roll_std_24h']  = past_24.std()  if len(past_24) > 1 else 0.0
 
-        rows.append(feat)
+        # Create 1-row dataframe for prediction
+        feat_df = pd.DataFrame([feat])
+        for c in train_features:
+            if c not in feat_df.columns:
+                feat_df[c] = 0.0
+        X_input = feat_df[train_features].fillna(0)
 
-    X_future = pd.DataFrame(rows)
+        # Predict this single hour
+        pred = model.predict(X_input)[0]
+        
+        # Append prediction to combined_pollutants so the NEXT hour can use it as lag!
+        new_row = {'time': t}
+        for j, pol in enumerate(POLLUTANTS):
+            new_row[pol] = pred[j]
+        combined_pollutants = pd.concat([combined_pollutants, pd.DataFrame([new_row])], ignore_index=True)
+        
+        # Save prediction
+        preds_list.append(pred)
 
-    # ── 6. Run predictions ────────────────────────────────────────────────────
-    # Extract the exact feature names and order that the model was trained on
-    train_features = [c for c in historical.columns if c not in POLLUTANTS and c != 'time']
-    
-    # Ensure X_future has exactly these columns in this order
-    for c in train_features:
-        if c not in X_future.columns:
-            X_future[c] = 0.0
-            
-    X_input = X_future[train_features].fillna(0)
-
-    print("Running XGBoost predictions...")
-    preds = model.predict(X_input)
-    preds_df = pd.DataFrame(preds, columns=[f'pred_{p}' for p in POLLUTANTS])
+    X_future = pd.DataFrame([row for row in combined_pollutants.to_dict('records') if row['time'] in future['time'].values])
+    preds_df = pd.DataFrame(preds_list, columns=[f'pred_{p}' for p in POLLUTANTS])
 
     # Compute US EPA AQI from predicted PM2.5
     preds_df['US_EPA_AQI'] = preds_df['pred_pm2_5'].apply(pm25_to_aqi)
 
     # Combine with time and weather
-    result = pd.concat([X_future[['time'] + list(future.columns[1:])].reset_index(drop=True),
-                        preds_df], axis=1)
+    result = pd.concat([future.reset_index(drop=True), preds_df], axis=1)
     result['time'] = result['time'].astype(str)
 
     # ── 7. Save locally for dashboard ────────────────────────────────────────

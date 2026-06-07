@@ -52,14 +52,17 @@ def train_and_upload_model():
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
-    # 3. Train Models
-    # NOTE: RF uses fewer, shallower trees to keep model file size manageable for upload (~20MB vs ~1GB)
+    # NOTE: RF uses controlled params to balance model file size vs accuracy.
+    # n_estimators=60 + max_depth=15 + min_samples_leaf=2 gives strong R2
+    # without the file ballooning to 1GB+ (compress=3 keeps it ~20-25MB).
+    # max_features is left at default (1.0 = all features) — 'sqrt' hurts regression R2.
     models_to_train = {
         "xgboost_multi_aqi": MultiOutputRegressor(XGBRegressor(
             n_estimators=100, learning_rate=0.1, max_depth=6, random_state=42, n_jobs=-1
         )),
         "rf_multi_aqi": MultiOutputRegressor(RandomForestRegressor(
-            n_estimators=30, max_depth=12, random_state=42, n_jobs=-1
+            n_estimators=60, max_depth=15, min_samples_leaf=2,
+            random_state=42, n_jobs=-1
         )),
         "lr_multi_aqi": MultiOutputRegressor(LinearRegression(n_jobs=-1))
     }
@@ -74,6 +77,9 @@ def train_and_upload_model():
         mae = mean_absolute_error(y_test, y_pred)
         r2 = r2_score(y_test, y_pred)
         print(f"{model_name} Performance: MAE = {mae:.4f}, R2 = {r2:.4f}")
+        
+        print(f"Retraining {model_name} on 100% of data for production deployment...")
+        model.fit(X, y)
         
         # Save locally in a specific directory for this model
         model_dir = os.path.join(PROJECT_ROOT, 'models', 'hopsworks', model_name)
