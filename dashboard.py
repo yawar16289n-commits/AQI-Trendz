@@ -218,27 +218,120 @@ def load_current_actuals_openmeteo():
         }
     except Exception as e:
         return None
-@st.cache_data(ttl=3600)   # refresh cache every hour
-def load_predictions_hopsworks():
-    """Load predictions from Hopsworks feature group."""
+
+# AQI breakpoints for PM2.5
+def _pm25_to_aqi(pm25):
+    bps = [
+        (0.0, 12.0, 0, 50), (12.1, 35.4, 51, 100),
+        (35.5, 55.4, 101, 150), (55.5, 150.4, 151, 200),
+        (150.5, 250.4, 201, 300), (250.5, 500.4, 301, 500),
+    ]
+    for lo, hi, a_lo, a_hi in bps:
+        if lo <= pm25 <= hi:
+            return round(((a_hi - a_lo) / (hi - lo)) * (pm25 - lo) + a_lo)
+    return 500
+
+@st.cache_data(ttl=3600)
+def generate_live_predictions():
+    """Generate 72-hour predictions live: fetch future weather + run model.
+    Bypasses the Hopsworks aqi_predictions feature group entirely."""
     api_key = os.getenv("HOPSWORKS_API_KEY")
-    if not api_key:
-        return None, "no_key"
     try:
-        project = hopsworks.login()
-        fs = project.get_feature_store()
-        # Try version 2 first, fall back to version 1
-        try:
-            fg = fs.get_feature_group(name="aqi_predictions", version=2)
-        except Exception:
-            fg = fs.get_feature_group(name="aqi_predictions", version=1)
-        df = fg.read()
-        df['time'] = pd.to_datetime(df['time'], utc=True)
-        df = df.sort_values('time').reset_index(drop=True)
-        # Keep only rows that are in the future (timezone-aware comparison)
+        # 1. Fetch 7-day future weather from Open-Meteo
+        cache_s = requests_cache.CachedSession('.cache', expire_after=3600)
+        retry_s = retry(cache_s, retries=5, backoff_factor=0.2)
+        om = openmeteo_requests.Client(session=retry_s)
+        resp = om.weather_api("https://api.open-meteo.com/v1/forecast", params={
+            "latitude": 24.933, "longitude": 67.033,
+            "hourly": ["temperature_2m", "relative_humidity_2m", "precipitation",
+                       "surface_pressure", "wind_speed_10m", "wind_direction_10m", "cloud_cover"],
+            "past_days": 7, "forecast_days": 7,
+        })[0].Hourly()
+        weather_df = pd.DataFrame({
+            "time": pd.date_range(
+                start=pd.to_datetime(resp.Time(), unit="s", utc=True),
+                end=pd.to_datetime(resp.TimeEnd(), unit="s", utc=True),
+                freq=pd.Timedelta(seconds=resp.Interval()), inclusive="left"),
+            "temperature_2m":       resp.Variables(0).ValuesAsNumpy(),
+            "relative_humidity_2m": resp.Variables(1).ValuesAsNumpy(),
+            "precipitation":        resp.Variables(2).ValuesAsNumpy(),
+            "surface_pressure":     resp.Variables(3).ValuesAsNumpy(),
+            "wind_speed_10m":       resp.Variables(4).ValuesAsNumpy(),
+            "wind_direction_10m":   resp.Variables(5).ValuesAsNumpy(),
+            "cloud_cover":          resp.Variables(6).ValuesAsNumpy(),
+        })
         now_utc = pd.Timestamp.now(tz='UTC')
-        df = df[df['time'] >= now_utc].reset_index(drop=True)
-        return df, "hopsworks"
+        future = weather_df[weather_df["time"] > now_utc].reset_index(drop=True)
+
+        # 2. Load historical lag context from Hopsworks
+        historical = None
+        if api_key:
+            try:
+                project = hopsworks.login()
+                fs = project.get_feature_store()
+                fg = fs.get_feature_group(name="aqi_weather_features", version=1)
+                raw = fg.read()
+                raw['time'] = pd.to_datetime(raw['time'], utc=True)
+                historical = raw.sort_values('time').tail(48).reset_index(drop=True)
+            except Exception:
+                historical = None
+
+        if historical is None or len(historical) == 0:
+            return None, "no_history"
+
+        # 3. Load the model
+        model, _, _, _, _, _ = load_model_and_data()
+        if model is None:
+            return None, "no_model"
+
+        # 4. Run autoregressive predictions hour by hour
+        POLLUTANTS = ['pm2_5', 'pm10', 'nitrogen_dioxide', 'sulphur_dioxide', 'carbon_monoxide']
+        LAG_HOURS  = [1, 2, 6, 24]
+        train_features = [c for c in historical.columns if c not in POLLUTANTS and c != 'time']
+        combined = historical[['time'] + POLLUTANTS].copy()
+        preds_list = []
+
+        for _, row in future.iterrows():
+            t = row['time']
+            feat = {
+                'hour': t.hour, 'day': t.day, 'month': t.month,
+                'day_of_week': t.dayofweek, 'is_weekend': int(t.dayofweek >= 5),
+                'temperature_2m': row.get('temperature_2m', 0),
+                'relative_humidity_2m': row.get('relative_humidity_2m', 0),
+                'precipitation': row.get('precipitation', 0),
+                'surface_pressure': row.get('surface_pressure', 0),
+                'wind_speed_10m': row.get('wind_speed_10m', 0),
+                'wind_direction_10m': row.get('wind_direction_10m', 0),
+                'cloud_cover': row.get('cloud_cover', 0),
+            }
+            import numpy as np
+            for pol in POLLUTANTS:
+                for lag in LAG_HOURS:
+                    past = combined[combined['time'] <= t - pd.Timedelta(hours=lag)]
+                    feat[f'{pol}_lag_{lag}h'] = past.iloc[-1][pol] if len(past) > 0 else 0.0
+                p24 = combined[(combined['time'] < t) & (combined['time'] >= t - pd.Timedelta(hours=24))][pol]
+                p6  = combined[(combined['time'] < t) & (combined['time'] >= t - pd.Timedelta(hours=6))][pol]
+                feat[f'{pol}_roll_mean_6h']  = p6.mean()  if len(p6)  > 0 else 0.0
+                feat[f'{pol}_roll_std_6h']   = p6.std()   if len(p6)  > 1 else 0.0
+                feat[f'{pol}_roll_mean_24h'] = p24.mean() if len(p24) > 0 else 0.0
+                feat[f'{pol}_roll_std_24h']  = p24.std()  if len(p24) > 1 else 0.0
+
+            feat_df = pd.DataFrame([feat])
+            for c in train_features:
+                if c not in feat_df.columns:
+                    feat_df[c] = 0.0
+            X = feat_df[train_features].fillna(0)
+            pred = model.predict(X)[0]
+            preds_list.append(pred)
+            new_row = {'time': t}
+            for j, pol in enumerate(POLLUTANTS):
+                new_row[pol] = pred[j]
+            combined = pd.concat([combined, pd.DataFrame([new_row])], ignore_index=True)
+
+        preds_df = pd.DataFrame(preds_list, columns=[f'pred_{p}' for p in POLLUTANTS])
+        preds_df['US_EPA_AQI'] = preds_df['pred_pm2_5'].apply(_pm25_to_aqi)
+        result = pd.concat([future.reset_index(drop=True), preds_df], axis=1)
+        return result, "live"
     except Exception as e:
         return None, str(e)
 
@@ -330,8 +423,8 @@ page = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.caption("Powered by AI · Hopsworks · Open-Meteo")
 
-# ── Load predictions (Hopsworks first, local CSV only as fallback) ────────────
-preds_df, data_source = load_predictions_hopsworks()
+# ── Generate live predictions (model runs directly in dashboard) ────────────
+preds_df, data_source = generate_live_predictions()
 source_label = "live"
 if preds_df is None or preds_df.empty:
     preds_df = load_predictions_local()
