@@ -166,7 +166,7 @@ section[data-testid="stSidebar"] {
 PREDICTIONS_PATH = os.path.join(SCRIPT_DIR, 'data', 'cleaned', 'predictions.csv')
 HISTORY_PATH     = os.path.join(SCRIPT_DIR, 'models', 'model_history.csv')
 LOCAL_MODEL_PATH = os.path.join(SCRIPT_DIR, 'models', 'best_model.pkl')
-FEATURED_DATA    = os.path.join(SCRIPT_DIR, 'data', 'cleaned', 'featured_historical_data.csv')
+FEATURED_DATA    = os.path.join(SCRIPT_DIR, 'assets', 'shap_background.csv')
 
 # --- HELPERS ---
 def get_aqi_status(aqi):
@@ -248,9 +248,8 @@ def load_predictions_local():
     return None
 
 @st.cache_data
+@st.cache_data
 def load_history():
-    if os.path.exists(HISTORY_PATH):
-        return pd.read_csv(HISTORY_PATH)
     return None
 
 @st.cache_resource
@@ -258,6 +257,10 @@ def load_model_and_data():
     """Load model and featured data — tries Hopsworks Registry first, falls back to local."""
     api_key = os.getenv("HOPSWORKS_API_KEY")
     model = None
+    best_model_name = "Unknown Model"
+    best_r2 = -float('inf')
+    best_mae = float('nan')
+    
     if api_key:
         try:
             project = hopsworks.login()
@@ -265,8 +268,6 @@ def load_model_and_data():
             
             # Find the absolute best model dynamically
             model_names = ["xgboost_multi_aqi", "rf_multi_aqi", "lr_multi_aqi"]
-            best_model_name = None
-            best_r2 = -float('inf')
             best_hw_model = None
 
             for name in model_names:
@@ -275,6 +276,7 @@ def load_model_and_data():
                     r2 = hw_model.training_metrics.get('r2', -float('inf'))
                     if r2 > best_r2:
                         best_r2 = r2
+                        best_mae = hw_model.training_metrics.get('mae', float('nan'))
                         best_hw_model = hw_model
                         best_model_name = name
                 except Exception:
@@ -289,14 +291,17 @@ def load_model_and_data():
 
     if model is None and os.path.exists(LOCAL_MODEL_PATH):
         model = joblib.load(LOCAL_MODEL_PATH)
+        best_model_name = "Local Model"
+        best_r2 = float('nan')
+        best_mae = float('nan')
 
-    # Data for SHAP (use local featured CSV — it's large but only loaded once)
+    # Data for SHAP (use fast tracked CSV instead of huge dataset)
     if os.path.exists(FEATURED_DATA):
         df = pd.read_csv(FEATURED_DATA)
     else:
         df = None
 
-    return model, df
+    return model, df, best_model_name, best_r2, best_mae
 
 # --- SIDEBAR ---
 st.sidebar.markdown("## 🌍 AQI-Trendz")
@@ -555,63 +560,39 @@ elif page == "Model Diagnostics":
         st.markdown("""
         <div class="glass-panel">
             <div style="font-size:2rem; margin-bottom:10px;">&#129302;</div>
-            <h4 style="color:#10b981; margin-bottom:8px; font-size:1.1rem;">Step 4: Prediction</h4>
+            <h4 style="color:#10b981;">Step 4: Prediction</h4>
             <p style="color:#94a3b8; font-size:12.5px; line-height:1.5;">The best model predicts PM2.5, PM10, etc. for the next 72 hours, converting them into EPA AQI scores.</p>
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown('<h3 style="color:#f8fafc; margin:20px 0 15px;">&#128203; Last 3 Model Training Runs</h3>', unsafe_allow_html=True)
-    hist_df = load_history()
-    if hist_df is not None and not hist_df.empty:
-        # Sort by timestamp descending to get the truly last 3 runs
-        last3 = hist_df.sort_values('timestamp', ascending=False).head(3).reset_index(drop=True)
-        best_idx = last3['mae'].idxmin() if not last3['mae'].isna().all() else -1
-        
-        cols = st.columns(len(last3))
-        for idx, row in last3.iterrows():
-            model_name = row.get('model_name', 'Unknown')
-            if idx == best_idx:
-                model_name = f"🏆 {model_name} (Best)"
-                
-            r2  = row.get('r2',  row.get('R2',  float('nan')))
-            mae = row.get('mae', row.get('MAE', float('nan')))
-            aqi_mae = row.get('aqi_mae', float('nan'))
-            rmse = row.get('rmse', row.get('RMSE', float('nan')))
-            
-            color = '#10b981' if 'xg' in str(model_name).lower() else '#60a5fa' if 'rf' in str(model_name).lower() else '#fbbf24'
-            
-            r2_val = "N/A" if pd.isna(r2) else f"{float(r2):.3f}"
-            mae_val = "N/A" if pd.isna(mae) else f"{float(mae):.2f}"
-            rmse_val = "N/A" if pd.isna(rmse) else f"{float(rmse):.2f}"
-            aqi_mae_val = "N/A" if pd.isna(aqi_mae) else f"{float(aqi_mae):.1f}"
-            
-            with cols[idx]:
-                st.markdown(f"""
-                <div style="background:rgba(30,41,59,0.4); border:1px solid rgba(255,255,255,0.08); border-left:4px solid {color};
-                            border-radius:14px; padding:18px; margin-bottom:12px; height:100%;">
-                    <div style="font-size:16px; font-weight:800; color:#f8fafc; font-family:'Outfit'; margin-bottom:12px;">{model_name}</div>
-                    <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">R²</div>
-                            <div style="font-size:24px; font-weight:800; color:{color};">{r2_val}</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">MAE</div>
-                            <div style="font-size:24px; font-weight:800; color:#f8fafc;">{mae_val}</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">RMSE</div>
-                            <div style="font-size:24px; font-weight:800; color:#f8fafc;">{rmse_val}</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:11px; color:#64748b; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px;">AQI MAE</div>
-                            <div style="font-size:24px; font-weight:800; color:#f8fafc;">{aqi_mae_val}</div>
-                        </div>
-                    </div>
+    model, data, best_model_name, best_r2, best_mae = load_model_and_data()
+
+    st.markdown('<h3 style="color:#f8fafc; margin:20px 0 15px;">🚀 Active Production Model (Hopsworks Registry)</h3>', unsafe_allow_html=True)
+    if best_r2 != -float('inf') and not pd.isna(best_r2):
+        color = '#10b981' if 'xg' in str(best_model_name).lower() else '#60a5fa' if 'rf' in str(best_model_name).lower() else '#fbbf24'
+        st.markdown(f"""
+        <div style="background:#1e293b; border:1px solid #334155; border-radius:12px; padding:20px; text-align:center;">
+            <p style="color:#94a3b8; font-size:12px; margin:0 0 5px 0;">Currently Serving Predictions</p>
+            <h3 style="color:{color}; margin:0 0 15px 0; font-size:1.4rem;">{best_model_name}</h3>
+            <div style="display:flex; justify-content:center; gap:30px;">
+                <div>
+                    <span style="color:#94a3b8; font-size:13px; display:block;">R² Score</span>
+                    <span style="color:#f8fafc; font-size:24px; font-weight:700;">{best_r2:.4f}</span>
                 </div>
-                """, unsafe_allow_html=True)
+                <div>
+                    <span style="color:#94a3b8; font-size:13px; display:block;">Mean Abs Error (MAE)</span>
+                    <span style="color:#f8fafc; font-size:24px; font-weight:700;">{best_mae:.4f}</span>
+                </div>
+            </div>
+            <p style="color:#64748b; font-size:12px; margin-top:15px; text-align:left;">
+            <i>This model was dynamically selected by the Hopsworks pipeline because it achieved the highest R² score during the last training run. It outperformed all other candidates on the multi-pollutant objective.</i>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.info("No model history found. Training runs will appear here after the pipeline executes.")
+        st.info("No model history found in Hopsworks Registry. Using local fallback model.")
+
+
 
 
 elif page == "Feature Explainability (SHAP)":
@@ -622,7 +603,7 @@ elif page == "Feature Explainability (SHAP)":
     </div>
     """, unsafe_allow_html=True)
 
-    model, data = load_model_and_data()
+    model, data, best_model_name, best_r2, best_mae = load_model_and_data()
 
     if model is None:
         st.error("Could not load model. Please run hopsworks_training.py first.")
