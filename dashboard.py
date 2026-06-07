@@ -295,11 +295,20 @@ def load_model_and_data():
         best_r2 = float('nan')
         best_mae = float('nan')
 
-    # Data for SHAP (use fast tracked CSV instead of huge dataset)
-    if os.path.exists(FEATURED_DATA):
-        df = pd.read_csv(FEATURED_DATA)
-    else:
-        df = None
+    # Fetch SHAP background data dynamically from Hopsworks to avoid CSV files
+    df = None
+    if api_key:
+        try:
+            project = hopsworks.login()
+            fs = project.get_feature_store()
+            fg = fs.get_feature_group(name="aqi_weather_features", version=1)
+            raw_df = fg.read()
+            raw_df['time'] = pd.to_datetime(raw_df['time'], utc=True)
+            raw_df = raw_df.sort_values('time')
+            # Only keep the last 150 rows to keep it lightning fast
+            df = raw_df.tail(150).reset_index(drop=True)
+        except Exception:
+            df = None
 
     return model, df, best_model_name, best_r2, best_mae
 
@@ -619,13 +628,20 @@ elif page == "Feature Explainability (SHAP)":
         estimator_type = type(estimator).__name__
 
         with st.spinner("Computing SHAP values for PM 2.5..."):
-            if 'Linear' in estimator_type or 'Ridge' in estimator_type:
-                explainer = shap.LinearExplainer(estimator, X_sample)
-            elif 'RandomForest' in estimator_type or 'XGB' in estimator_type:
-                explainer = shap.TreeExplainer(estimator)
-            else:
-                explainer = shap.Explainer(estimator, X_sample)
-            shap_values = explainer.shap_values(X_sample)
+            try:
+                if 'Linear' in estimator_type or 'Ridge' in estimator_type:
+                    explainer = shap.LinearExplainer(estimator, X_sample)
+                    shap_values = explainer.shap_values(X_sample)
+                elif 'RandomForest' in estimator_type or 'XGB' in estimator_type:
+                    explainer = shap.TreeExplainer(estimator)
+                    shap_values = explainer.shap_values(X_sample)
+                else:
+                    explainer = shap.Explainer(estimator, X_sample)
+                    shap_values = explainer(X_sample).values
+            except Exception as e:
+                # Fallback for newer XGBoost versions that crash TreeExplainer
+                explainer = shap.Explainer(estimator.predict, X_sample)
+                shap_values = explainer(X_sample).values
 
         col1, col2 = st.columns([3, 2])
 
