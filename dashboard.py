@@ -593,13 +593,20 @@ elif page == "Model Diagnostics":
         """, unsafe_allow_html=True)
 
         cols = st.columns(len(all_metrics_sorted))
+        pretty_names = {
+            "xgboost_multi_aqi": "XGBoost",
+            "rf_multi_aqi": "Random Forest",
+            "lr_multi_aqi": "Linear Regression"
+        }
+        
         for idx, m in enumerate(all_metrics_sorted):
             name = m['name']
+            pretty_name = pretty_names.get(name, name)
             r2 = m['r2']
             mae = m['mae']
             is_best = (name == best_model_name)
             
-            disp_name = f"🏆 {name}" if is_best else name
+            disp_name = f"🏆 {pretty_name}" if is_best else pretty_name
             color = '#10b981' if 'xg' in name.lower() else '#60a5fa' if 'rf' in name.lower() else '#fbbf24'
             border_style = f"border: 2px solid {color}; box-shadow: 0 0 15px {color}40;" if is_best else "border: 1px solid #334155; opacity: 0.7;"
             
@@ -635,7 +642,7 @@ elif page == "Feature Explainability (SHAP)":
     </div>
     """, unsafe_allow_html=True)
 
-    model, data, best_model_name, best_r2, best_mae = load_model_and_data()
+    model, data, best_model_name, best_r2, best_mae, all_metrics = load_model_and_data()
 
     if model is None:
         st.error("Could not load model. Please run hopsworks_training.py first.")
