@@ -5,7 +5,7 @@
 > **⚠️ Note on Loading Speed:** The dashboard runs a live machine learning prediction engine on startup. Due to latency with the Hopsworks Feature Store, the initial page load may take up to **30 seconds**. Please be patient! Once loaded, the predictions are cached for a smooth experience.
 ## 📌 Overview
 
-**AQIPrediction_10Pearls_Cohort8** is a Machine Learning-based web application designed to forecast the Air Quality Index (AQI) and 5 major pollutants for the next **3 Days (72 hours)**. Focusing on Karachi, Pakistan, the project aims to provide users with early insights into future air quality conditions, enabling them to make informed decisions regarding outdoor activities, travel, and health-related precautions.
+**AQI TRENDZ** is a Machine Learning-based web application designed to forecast the Air Quality Index (AQI) and 5 major pollutants for the next **3 Days (72 hours)**. Focusing on Karachi, Pakistan, the project aims to provide users with early insights into future air quality conditions, enabling them to make informed decisions regarding outdoor activities, travel, and health-related precautions.
 
 The system leverages a fully automated **Serverless & Cloud-Native** pipeline. It continuously ingests data, performs feature engineering, and uses predictive machine learning techniques (XGBoost & Random Forest) to analyze historical AQI patterns. An interactive Streamlit dashboard allows users to seamlessly access predictions, view historical trends, and explore model explanations via SHAP.
 
