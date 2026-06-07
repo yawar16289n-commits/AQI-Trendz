@@ -47,7 +47,7 @@ def fetch_latest():
             "cloud_cover",
         ],
         "past_days": 7,
-        "forecast_days": 4,
+        "forecast_days": 7,
     }
     weather_resp = openmeteo.weather_api(weather_url, params=weather_params)[0]
     hourly = weather_resp.Hourly()

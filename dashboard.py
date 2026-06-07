@@ -682,7 +682,7 @@ elif page == "Feature Explainability (SHAP)":
             fig, ax = plt.subplots(figsize=(9, 7))
             fig.patch.set_facecolor('#0f172a')
             ax.set_facecolor('#1e293b')
-            shap.summary_plot(shap_values, X_sample, show=False, plot_size=None, color_bar=True)
+            shap.summary_plot(shap_values, X_sample, show=False, plot_size=None, color_bar=False)
             ax = plt.gca()
             ax.set_facecolor('#1e293b')
             ax.tick_params(colors='#94a3b8', labelsize=10)
