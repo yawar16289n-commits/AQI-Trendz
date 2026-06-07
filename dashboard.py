@@ -220,21 +220,24 @@ def load_current_actuals_openmeteo():
         return None
 @st.cache_data(ttl=3600)   # refresh cache every hour
 def load_predictions_hopsworks():
-    """Try to load predictions from Hopsworks; fall back to local CSV."""
+    """Load predictions from Hopsworks feature group."""
     api_key = os.getenv("HOPSWORKS_API_KEY")
     if not api_key:
         return None, "no_key"
     try:
         project = hopsworks.login()
         fs = project.get_feature_store()
-        fg = fs.get_feature_group(name="aqi_predictions", version=2)
+        # Try version 2 first, fall back to version 1
+        try:
+            fg = fs.get_feature_group(name="aqi_predictions", version=2)
+        except Exception:
+            fg = fs.get_feature_group(name="aqi_predictions", version=1)
         df = fg.read()
         df['time'] = pd.to_datetime(df['time'], utc=True)
         df = df.sort_values('time').reset_index(drop=True)
-        # Keep only future rows
-        now = pd.Timestamp.utcnow().tz_localize(None)
-        df['time_naive'] = df['time'].dt.tz_localize(None)
-        df = df[df['time_naive'] >= now].drop(columns=['time_naive'])
+        # Keep only rows that are in the future (timezone-aware comparison)
+        now_utc = pd.Timestamp.now(tz='UTC')
+        df = df[df['time'] >= now_utc].reset_index(drop=True)
         return df, "hopsworks"
     except Exception as e:
         return None, str(e)
@@ -327,13 +330,13 @@ page = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.caption("Powered by AI · Hopsworks · Open-Meteo")
 
-# ── Load predictions (Hopsworks → local fallback) ─────────────────────────────
-preds_df = load_predictions_local()
-data_source = "local"
-source_label = "local"
-if preds_df is None:
-    preds_df, data_source = load_predictions_hopsworks()
-    source_label = "live"
+# ── Load predictions (Hopsworks first, local CSV only as fallback) ────────────
+preds_df, data_source = load_predictions_hopsworks()
+source_label = "live"
+if preds_df is None or preds_df.empty:
+    preds_df = load_predictions_local()
+    source_label = "local"
+    data_source = "local"
 
 # =============================================================================
 # PAGE: 3-DAY FORECAST
@@ -426,9 +429,18 @@ if page == "3-Day Forecast":
 
     # ── 3-DAY FORECAST CARDS ──────────────────────────────────────────────────
     if preds_df is not None and not preds_df.empty:
-        preds_df['date'] = preds_df['time'].dt.date
+        # Ensure timezone-aware before extracting date
+        if preds_df['time'].dt.tz is None:
+            preds_df['time'] = pd.to_datetime(preds_df['time'], utc=True)
+        # Convert to Karachi local time (UTC+5) for meaningful calendar days
+        preds_df['date'] = preds_df['time'].dt.tz_convert('Asia/Karachi').dt.date
         aqi_col = 'US_EPA_AQI' if 'US_EPA_AQI' in preds_df.columns else 'us_epa_aqi'
-        daily_p = preds_df.groupby('date')[aqi_col].mean().reset_index().head(3)
+        today_local = pd.Timestamp.now(tz='Asia/Karachi').date()
+        # Drop today's partial hours — only keep full future dates
+        daily_p = (preds_df[preds_df['date'] > today_local]
+                   .groupby('date')[aqi_col].mean()
+                   .reset_index()
+                   .head(3))
         day_labels = ['Tomorrow', 'Day 2', 'Day 3']
 
         st.markdown('<h3 style="color:#f8fafc; margin:30px 0 15px;">&#128302; 3-Day AQI Forecast</h3>', unsafe_allow_html=True)
