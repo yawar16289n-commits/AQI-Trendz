@@ -260,6 +260,7 @@ def load_model_and_data():
     best_model_name = "Unknown Model"
     best_r2 = -float('inf')
     best_mae = float('nan')
+    all_metrics = []
     
     if api_key:
         try:
@@ -274,9 +275,12 @@ def load_model_and_data():
                 try:
                     hw_model = mr.get_best_model(name=name, metric="r2", direction="max")
                     r2 = hw_model.training_metrics.get('r2', -float('inf'))
+                    mae = hw_model.training_metrics.get('mae', float('nan'))
+                    all_metrics.append({'name': name, 'r2': r2, 'mae': mae})
+                    
                     if r2 > best_r2:
                         best_r2 = r2
-                        best_mae = hw_model.training_metrics.get('mae', float('nan'))
+                        best_mae = mae
                         best_hw_model = hw_model
                         best_model_name = name
                 except Exception:
@@ -310,7 +314,7 @@ def load_model_and_data():
         except Exception:
             df = None
 
-    return model, df, best_model_name, best_r2, best_mae
+    return model, df, best_model_name, best_r2, best_mae, all_metrics
 
 # --- SIDEBAR ---
 st.sidebar.markdown("## 🌍 AQI-Trendz")
@@ -574,30 +578,49 @@ elif page == "Model Diagnostics":
         </div>
         """, unsafe_allow_html=True)
 
-    model, data, best_model_name, best_r2, best_mae = load_model_and_data()
+    model, data, best_model_name, best_r2, best_mae, all_metrics = load_model_and_data()
 
-    st.markdown('<h3 style="color:#f8fafc; margin:20px 0 15px;">🚀 Active Production Model (Hopsworks Registry)</h3>', unsafe_allow_html=True)
-    if best_r2 != -float('inf') and not pd.isna(best_r2):
-        color = '#10b981' if 'xg' in str(best_model_name).lower() else '#60a5fa' if 'rf' in str(best_model_name).lower() else '#fbbf24'
-        st.markdown(f"""
-        <div style="background:#1e293b; border:1px solid #334155; border-radius:12px; padding:20px; text-align:center;">
-            <p style="color:#94a3b8; font-size:12px; margin:0 0 5px 0;">Currently Serving Predictions</p>
-            <h3 style="color:{color}; margin:0 0 15px 0; font-size:1.4rem;">{best_model_name}</h3>
-            <div style="display:flex; justify-content:center; gap:30px;">
-                <div>
-                    <span style="color:#94a3b8; font-size:13px; display:block;">R² Score</span>
-                    <span style="color:#f8fafc; font-size:24px; font-weight:700;">{best_r2:.4f}</span>
-                </div>
-                <div>
-                    <span style="color:#94a3b8; font-size:13px; display:block;">Mean Abs Error (MAE)</span>
-                    <span style="color:#f8fafc; font-size:24px; font-weight:700;">{best_mae:.4f}</span>
-                </div>
-            </div>
-            <p style="color:#64748b; font-size:12px; margin-top:15px; text-align:left;">
-            <i>This model was dynamically selected by the Hopsworks pipeline because it achieved the highest R² score during the last training run. It outperformed all other candidates on the multi-pollutant objective.</i>
-            </p>
-        </div>
+    st.markdown('<h3 style="color:#f8fafc; margin:20px 0 15px;">🚀 Model Diagnostics (Hopsworks Registry)</h3>', unsafe_allow_html=True)
+    if all_metrics:
+        # Sort metrics by R2 descending
+        all_metrics_sorted = sorted(all_metrics, key=lambda x: x['r2'], reverse=True)
+        
+        st.markdown("""
+        <p style="color:#94a3b8; font-size:14px; margin-bottom:20px;">
+        Below are the top models currently registered in the Hopsworks feature store. 
+        The system dynamically selects the model with the highest R² score to serve the live predictions.
+        </p>
         """, unsafe_allow_html=True)
+
+        cols = st.columns(len(all_metrics_sorted))
+        for idx, m in enumerate(all_metrics_sorted):
+            name = m['name']
+            r2 = m['r2']
+            mae = m['mae']
+            is_best = (name == best_model_name)
+            
+            disp_name = f"🏆 {name}" if is_best else name
+            color = '#10b981' if 'xg' in name.lower() else '#60a5fa' if 'rf' in name.lower() else '#fbbf24'
+            border_style = f"border: 2px solid {color}; box-shadow: 0 0 15px {color}40;" if is_best else "border: 1px solid #334155; opacity: 0.7;"
+            
+            r2_str = f"{r2:.4f}" if r2 != -float('inf') else "N/A"
+            mae_str = f"{mae:.4f}" if not pd.isna(mae) else "N/A"
+            
+            with cols[idx]:
+                st.markdown(f"""
+                <div style="background:#1e293b; {border_style} border-radius:12px; padding:15px; text-align:center; height:100%;">
+                    <h4 style="color:{color}; margin:0 0 15px 0; font-size:1.1rem; word-break:break-all;">{disp_name}</h4>
+                    <div style="margin-bottom:10px;">
+                        <span style="color:#94a3b8; font-size:12px; display:block; text-transform:uppercase;">R² Score</span>
+                        <span style="color:#f8fafc; font-size:20px; font-weight:700;">{r2_str}</span>
+                    </div>
+                    <div>
+                        <span style="color:#94a3b8; font-size:12px; display:block; text-transform:uppercase;">MAE</span>
+                        <span style="color:#f8fafc; font-size:20px; font-weight:700;">{mae_str}</span>
+                    </div>
+                    {f'<div style="margin-top:15px; color:#10b981; font-weight:bold; font-size:12px; background:rgba(16,185,129,0.1); padding:4px; border-radius:4px;">ACTIVE MODEL</div>' if is_best else ''}
+                </div>
+                """, unsafe_allow_html=True)
     else:
         st.info("No model history found in Hopsworks Registry. Using local fallback model.")
 
@@ -743,64 +766,8 @@ elif page == "Feature Explainability (SHAP)":
 
         # ── MULTI-POLLUTANT SHAP GRID ──────────────────────────────────────────
         st.markdown("---")
-        st.markdown('<h3 style="color:#f8fafc; margin:10px 0;">🧪 SHAP by Pollutant</h3>', unsafe_allow_html=True)
-        st.caption("Feature importance breakdown for each individual pollutant the model predicts.")
-
-        pollutants = [
-            (0, "PM 2.5",          "#3b82f6"),
-            (1, "PM 10",           "#8b5cf6"),
-            (2, "NO₂",             "#10b981"),
-            (3, "SO₂",             "#fbbf24"),
-            (4, "Carbon Monoxide", "#f87171"),
-        ]
-
-        # Compute all SHAP values upfront
-        shap_by_pollutant = {}
-        with st.spinner("Computing SHAP for all pollutants..."):
-            for idx, name, color in pollutants:
-                est = model.estimators_[idx]
-                est_type = type(est).__name__
-                if 'Linear' in est_type or 'Ridge' in est_type:
-                    exp = shap.LinearExplainer(est, X_sample)
-                elif 'RandomForest' in est_type or 'XGB' in est_type:
-                    exp = shap.TreeExplainer(est)
-                else:
-                    exp = shap.Explainer(est, X_sample)
-                shap_by_pollutant[idx] = exp.shap_values(X_sample)
-
-        # Render in 2-column grid
-        pairs = [(pollutants[i], pollutants[i+1]) if i+1 < len(pollutants) else (pollutants[i], None)
-                 for i in range(0, len(pollutants), 2)]
-
-        for left, right in pairs:
-            c1, c2 = st.columns(2)
-            for col, item in zip([c1, c2], [left, right]):
-                if item is None:
-                    continue
-                idx, name, color = item
-                with col:
-                    st.markdown(f'<h4 style="color:{color}; margin-bottom:4px;">● {name}</h4>', unsafe_allow_html=True)
-                    plt.style.use('dark_background')
-                    fig_p, ax_p = plt.subplots(figsize=(6, 5))
-                    fig_p.patch.set_facecolor('#0f172a')
-                    ax_p.set_facecolor('#1e293b')
-                    shap.summary_plot(
-                        shap_by_pollutant[idx], X_sample,
-                        show=False, plot_size=None,
-                        color_bar=False, max_display=10
-                    )
-                    ax_p = plt.gca()
-                    ax_p.set_facecolor('#1e293b')
-                    ax_p.tick_params(colors='#94a3b8', labelsize=9)
-                    ax_p.xaxis.label.set_color('#94a3b8')
-                    ax_p.set_xlabel(f"SHAP value ({name})", color='#94a3b8', fontsize=9)
-                    ax_p.spines['bottom'].set_color('#334155')
-                    ax_p.spines['left'].set_color('#334155')
-                    ax_p.spines['top'].set_visible(False)
-                    ax_p.spines['right'].set_visible(False)
-                    plt.tight_layout()
-                    st.pyplot(fig_p, use_container_width=True)
-                    plt.close()
-                    plt.style.use('default')
-
-
+        st.markdown("""
+        <p style="color:#94a3b8; font-size:14px; margin-bottom:20px; text-align:center; padding: 20px; background: rgba(30,41,59,0.5); border-radius: 8px;">
+        <i>Note: We only compute and display the SHAP explanations for <b>PM 2.5</b> above, as it is consistently the most impactful and hazardous pollutant driving the overall Air Quality Index (AQI) in Karachi.</i>
+        </p>
+        """, unsafe_allow_html=True)
