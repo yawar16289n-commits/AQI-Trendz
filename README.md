@@ -1,7 +1,7 @@
 # Serverless Air Quality Forecast System
 
 ## 📌 Project Overview
-This project is an end-to-end, fully automated **Air Quality Index (AQI) and Pollutant Forecasting System**. It fetches live weather and AQI data, engineers time-series features, and uses a trained **XGBoost** model to predict AQI and 5 major pollutants (PM2.5, PM10, NO2, SO2, CO) for the next 72 hours. 
+This project is an end-to-end, fully automated **Air Quality Index (AQI) and Pollutant Forecasting System** for Karachi, Pakistan. It predicts hourly pollutant concentrations for the next **3-Days (72 hours)** using Machine Learning. The system fetches live weather and AQI data, engineers time-series features, and uses a trained **XGBoost** model to predict AQI and 5 major pollutants (PM2.5, PM10, NO2, SO2, CO) for the next 72 hours. 
 
 The entire pipeline is designed to be **Serverless & Cloud-Native**, meaning no local computing power is required once deployed. It utilizes **Hopsworks** for its Feature Store and Model Registry, and **GitHub Actions** for scheduling and automation.
 
