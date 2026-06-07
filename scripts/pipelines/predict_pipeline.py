@@ -208,13 +208,26 @@ def run():
 
     pred_fg = fs.get_or_create_feature_group(
         name="aqi_predictions",
-        version=2,  # Bump version to avoid schema mismatch with older predictions
+        version=2,
         description="72-hour AQI and pollutant predictions",
         primary_key=["time"],
         event_time="time",
         online_enabled=True,
     )
-    pred_fg.insert(result, write_options={"wait_for_job": False})
+
+    # Wait for any in-progress materialization job to finish first
+    import time as time_module
+    try:
+        state = pred_fg.materialization_job.get_state()
+        if state in ("RUNNING", "SUBMITTED", "PENDING"):
+            print(f"  Waiting for existing materialization job to finish (state={state})...")
+            final = pred_fg.materialization_job.get_final_state()
+            print(f"  Previous job finished with state: {final}")
+    except Exception:
+        pass  # No previous job or can't check state — continue
+
+    # Insert with wait_for_job=True so we block until data is materialized
+    pred_fg.insert(result, write_options={"wait_for_job": True})
 
     print(f"\n[SUCCESS] Generated {len(result)} prediction rows and pushed to Hopsworks!")
 
